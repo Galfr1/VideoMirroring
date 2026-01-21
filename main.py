@@ -97,7 +97,7 @@ class CameraSelectionDialog:
 class VideoMirrorApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Video Mirror")
+        self.root.title("4K Video Mirror")
         self.root.configure(background='black')
         
         # Maximize window
@@ -111,8 +111,8 @@ class VideoMirrorApp:
         self.running = False
         self.available_cameras = []
         
-        # Video frame only
-        self.video_frame = ttk.Label(self.root, background="black")
+        # Video frame only - centered
+        self.video_frame = ttk.Label(self.root, background="black", anchor="center")
         self.video_frame.pack(expand=True, fill=tk.BOTH)
         
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
@@ -132,18 +132,6 @@ class VideoMirrorApp:
                 # Get a more descriptive name if possible
                 name = f"Video Input {i}"
                 
-                # On Windows, try to get a better name
-                try:
-                    # Read one frame to ensure camera is working
-                    ret, _ = cap.read()
-                    if ret:
-                        # Try to get resolution for identification
-                        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                        name = f"Video Input {i} ({width}x{height})"
-                except:
-                    name = f"Video Input {i}"
-                
                 camera_names.append(name)
                 cap.release()
         
@@ -156,7 +144,7 @@ class VideoMirrorApp:
         if len(self.available_cameras) == 1:
             # Only one camera, ask to start
             if messagebox.askyesno("Start Mirroring", 
-                                   f"{camera_names[0]} detected.\n\nStart mirroring?"):
+                                   f"{camera_names[0]} detected.\n\nStart mirroring in 4K?"):
                 self.start_mirror(0)
             else:
                 self.root.quit()
@@ -179,6 +167,20 @@ class VideoMirrorApp:
             self.root.quit()
             return
         
+        # Set 4K resolution (3840x2160)
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 3840)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 2160)
+        
+        # Verify the resolution that was actually set
+        actual_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        actual_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        
+        print(f"Camera resolution set to: {actual_width}x{actual_height}")
+        
+        # If 4K not supported, try other high resolutions
+        if actual_width < 3840:
+            print("4K not supported, camera is using its maximum resolution")
+        
         self.running = True
         self.update_frame()
     
@@ -188,11 +190,8 @@ class VideoMirrorApp:
         
         ret, frame = self.cap.read()
         if ret:
-            # Mirror the frame horizontally
-            mirrored = cv2.flip(frame, 1)
-            
-            # Convert from BGR to RGB
-            rgb = cv2.cvtColor(mirrored, cv2.COLOR_BGR2RGB)
+            # Convert from BGR to RGB (no flipping)
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             
             # Resize to fit window while maintaining aspect ratio
             h, w = rgb.shape[:2]
@@ -203,7 +202,7 @@ class VideoMirrorApp:
                 scale = min(frame_width/w, frame_height/h)
                 new_w = int(w * scale)
                 new_h = int(h * scale)
-                rgb = cv2.resize(rgb, (new_w, new_h))
+                rgb = cv2.resize(rgb, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
             
             # Convert to PhotoImage
             img = Image.fromarray(rgb)
@@ -212,7 +211,7 @@ class VideoMirrorApp:
             self.video_frame.imgtk = imgtk
             self.video_frame.config(image=imgtk)
         
-        # Schedule next update
+        # Schedule next update (10ms = ~100fps max, adjust if needed)
         self.root.after(10, self.update_frame)
     
     def on_closing(self):
