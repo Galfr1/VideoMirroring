@@ -1,6 +1,8 @@
 import sys
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
+import threading
+import time
 
 # Check for required libraries
 missing_libraries = []
@@ -111,6 +113,15 @@ class VideoMirrorApp:
         self.running = False
         self.available_cameras = []
         
+        # Frame buffer for thread-safe communication
+        self.current_frame = None
+        self.frame_lock = threading.Lock()
+        
+        # FPS tracking
+        self.fps = 0
+        self.frame_count = 0
+        self.fps_start_time = time.time()
+        
         # Video frame only - centered
         self.video_frame = ttk.Label(self.root, background="black", anchor="center")
         self.video_frame.pack(expand=True, fill=tk.BOTH)
@@ -171,48 +182,77 @@ class VideoMirrorApp:
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 3840)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 2160)
         
+        # Optimize camera settings for performance
+        self.cap.set(cv2.CAP_PROP_FPS, 60)  # Request 60 FPS
+        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Reduce buffer to minimize latency
+        
         # Verify the resolution that was actually set
         actual_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         actual_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        actual_fps = int(self.cap.get(cv2.CAP_PROP_FPS))
         
-        print(f"Camera resolution set to: {actual_width}x{actual_height}")
+        print(f"Camera resolution set to: {actual_width}x{actual_height} @ {actual_fps} FPS")
         
         # If 4K not supported, try other high resolutions
         if actual_width < 3840:
             print("4K not supported, camera is using its maximum resolution")
         
         self.running = True
-        self.update_frame()
+        
+        # Start capture thread
+        self.capture_thread = threading.Thread(target=self.capture_frames, daemon=True)
+        self.capture_thread.start()
+        
+        # Start display update
+        self.update_display()
     
-    def update_frame(self):
+    def capture_frames(self):
+        """Separate thread for capturing frames from camera"""
+        while self.running:
+            ret, frame = self.cap.read()
+            if ret:
+                # Convert from BGR to RGB immediately
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                
+                # Update shared frame buffer
+                with self.frame_lock:
+                    self.current_frame = rgb
+    
+    def update_display(self):
+        """Update the display with the latest frame"""
         if not self.running:
             return
         
-        ret, frame = self.cap.read()
-        if ret:
-            # Convert from BGR to RGB (no flipping)
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            
-            # Resize to fit window while maintaining aspect ratio
-            h, w = rgb.shape[:2]
-            frame_width = self.video_frame.winfo_width()
-            frame_height = self.video_frame.winfo_height()
-            
-            if frame_width > 1 and frame_height > 1:
-                scale = min(frame_width/w, frame_height/h)
-                new_w = int(w * scale)
-                new_h = int(h * scale)
-                rgb = cv2.resize(rgb, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
-            
-            # Convert to PhotoImage
-            img = Image.fromarray(rgb)
-            imgtk = ImageTk.PhotoImage(image=img)
-            
-            self.video_frame.imgtk = imgtk
-            self.video_frame.config(image=imgtk)
+        # Get the latest frame
+        with self.frame_lock:
+            if self.current_frame is not None:
+                rgb = self.current_frame.copy()
+            else:
+                self.root.after(5, self.update_display)
+                return
         
-        # Schedule next update (10ms = ~100fps max, adjust if needed)
-        self.root.after(10, self.update_frame)
+        # Resize to fit window while maintaining aspect ratio
+        h, w = rgb.shape[:2]
+        frame_width = self.video_frame.winfo_width()
+        frame_height = self.video_frame.winfo_height()
+        
+        if frame_width > 1 and frame_height > 1:
+            scale = min(frame_width/w, frame_height/h)
+            new_w = int(w * scale)
+            new_h = int(h * scale)
+            
+            # Use INTER_NEAREST for faster scaling (or INTER_LINEAR for better quality)
+            rgb = cv2.resize(rgb, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+        
+        # Convert to PhotoImage
+        img = Image.fromarray(rgb)
+        imgtk = ImageTk.PhotoImage(image=img)
+        
+        self.video_frame.imgtk = imgtk
+        self.video_frame.config(image=imgtk)
+        
+        # Schedule next update (5ms for ~200fps max)
+        self.root.after(5, self.update_display)
     
     def on_closing(self):
         self.running = False
